@@ -1,0 +1,237 @@
+from LibIMU import LibIMU,MPU9250
+from DRV_GPIO import MotorControl,Servo,Drill
+from DRV_GPS_Serial import Gps_Serial
+from DRV_Camera import Camera
+import time
+
+#Goal Ref
+GOAL_LAT = 0
+GOAL_LNG = 0
+
+CHANGE_MODE = False
+TEST_MODE = False
+
+#GPIO Number
+#Mortor
+MR1 = 17
+MR2 = 27
+ML1 = 22
+ML2 = 10
+#Servo
+SERVO = 18
+#Mortor(drill_Elevator)
+MD1 = 9
+MD2 = 11
+#Motor(drill)
+MD3 = 5
+MD4 = 6
+#Encoder(drill)
+ED1 = 23
+ED2 = 24
+#LED
+LED1 = 20
+LED2 = 21
+
+#Etc Setting
+#Turn Coefficient
+TURN_Coefficient = 1.2
+#Range for modechange
+Range = 8
+#Range for Goal
+Gdistance = 3
+#Moving Time(FirstTime)
+MoveTime = 8
+#GPS Distance Coefficient
+GPS_D_Coefficient = 0.7
+#Drill
+MaxLength = 100
+Gear_Radius = 10
+GetTime = 8
+
+
+def RunBack(lat,lng,test=False):
+
+    LatLngG = {
+    'lat':lat,
+    'lng':lng
+    }
+
+    #初期化
+    DRV_GPS_Ser = Gps_Serial()
+    DRV_GPS_Ser.launchGps()
+    DRV_GPS_Ser.trancemitData('RDY:GPS&Serial. GPIONum:14(TX,Serial),15(RX,GPS)')
+    DRV_GPS_Ser.trancemitData('Can You Hear Me?')
+    DRV_Mortor = MotorControl(MR1,MR2,ML1,ML2)
+    DRV_GPS_Ser.trancemitData('RDY:Mortor. GPIONum: MR1:'+str(MR1)+',MR2:'+str(MR2)+',ML1:'+str(ML1)+',ML2:'+str(ML2))
+    DRV_Servo = Servo(SERVO)
+    DRV_GPS_Ser.trancemitData('RDY:Servo. GPIONum:'+str(SERVO))
+    DRV_Camera = Camera()
+    DRV_GPS_Ser.trancemitData('RDY:Camera.')
+    DRV_GPS_Ser.trancemitData('CAUTION!:calibrating IMU. DONT TOUCH ME.')
+    #DRV_IMU = MPU9250(calibAcc=True,calibGyro=True)
+    IMU = LibIMU()
+    DRV_GPS_Ser.trancemitData('RDY:IMU. GPIONum:2(SDA),3(SCL)')
+    DRV_GPS_Ser.trancemitData('Initialized.')
+    DRV_GPS_Ser.trancemitData('Mode:GPS')
+
+    #投下待機
+    DRV_GPS_Ser.trancemitData('Waiting...')
+    DRV_GPS_Ser.stopSerial()
+    IMU.DRV.catchDropMk2(testmode=test)
+    DRV_GPS_Ser.reconnectSerial()
+
+    #10秒待つ
+    DRV_GPS_Ser.trancemitData('Waiting for 10 sec...')
+    time.sleep(10)
+
+    #パラシュートをパージ
+    DRV_Servo.swing()
+    DRV_Servo.terminate()
+
+    #GPS受信(初回)
+    LatLng0 = DRV_GPS_Ser.readGPSData()
+    DRV_GPS_Ser.trancemitData('1st GPS Data Recieved.')
+    DRV_GPS_Ser.trancemitData('Latitude:'+str(LatLng0['lat'])+',Longitude:'+str(LatLng0['lng']))
+    Distance2 = DRV_GPS_Ser.getDistance2(LatLng0,LatLngG)
+
+    #ループスタート
+    while True:
+        if Distance2['distance'] < Range:#8m未満ならば
+            if Distance2['distance'] > Gdistance:#3m以上ならば
+                if CHANGE_MODE == False:
+                    DRV_GPS_Ser.trancemitData('Mode:Image')
+                CHANGE_MODE = True#終末誘導モードへ
+            else:#3m以内ならばゴール
+                DRV_GPS_Ser.trancemitData('GOAL. Distance:'+str(Distance2['distance'])+'m')
+                while True:
+                    pass
+        else:#そうでなければ
+            if CHANGE_MODE == True:
+                DRV_GPS_Ser.trancemitData('Mode:GPS')
+            CHANGE_MODE = False#通常モードへ
+
+        if CHANGE_MODE == False:#通常モードならば
+
+            #しばらく前進 
+            IMU.launch6Axis()
+            DRV_Mortor.moveForward(MoveTime)
+            IMU.killThread()
+
+            #GPS受信
+            LatLng1 = DRV_GPS_Ser.readGPSData()
+            DRV_GPS_Ser.trancemitData('GPS Data Recieved.')
+            DRV_GPS_Ser.trancemitData('Latitude:'+str(LatLng1['lat'])+',Longitude:'+str(LatLng1['lng']))
+
+            #距離と方位角を計算する
+            Distance1 = DRV_GPS_Ser.getDistance2(LatLng0,LatLng1)#前回から現在へ
+            Distance2 = DRV_GPS_Ser.getDistance2(LatLng1,LatLngG)#現在からゴールへ
+            if Distance2['distance'] < Range:
+                LatLng0 = LatLng1
+                continue
+            Cource_Angle = Distance2['courseS2G'] - Distance1['courseS2G']#旋回すべき角度を算出する
+            MoveTime = Distance2/((Distance1['distance']*GPS_D_Coefficient + IMU.ACC_DX*(1-GPS_D_Coefficient))/MoveTime)#前進すべき時間の算出
+            
+            DRV_GPS_Ser.trancemitData('Distance to Goal:'+str(Distance2['distance']))
+            DRV_GPS_Ser.trancemitData('Course(Angle) to Goal:'+str(Cource_Angle))
+
+            if (IMU.ACC_DX<1):
+                DRV_GPS_Ser.trancemitData('Stacked!. Escaping...')
+                IMU.resetAll()
+                IMU.launch6Axis()
+                DRV_Mortor.escapeStack()
+                IMU.killThread()
+                turn_reset = -IMU.EA_YAW
+                DRV_Mortor.moveForward(2)
+                IMU.launch6Axis
+                if turn_reset < 0:
+                    DRV_Mortor.turnLeft_St
+                    while True:
+                        if IMU.EA_YAW*TURN_Coefficient < turn_reset:
+                            DRV_GPS_Ser.trancemitData('Turned(deg):'+str(IMU.EA_YAW)+'from Gyro-Sensor')
+                            break
+                else:
+                    DRV_Mortor.turnRight_St
+                    while True:
+                        if IMU.EA_YAW*TURN_Coefficient > turn_reset:
+                            DRV_GPS_Ser.trancemitData('Turned(deg):'+str(IMU.EA_YAW)+'from Gyro-Sensor')
+                            break
+                IMU.killThread()
+
+            IMU.resetAll()
+
+            #所定の角度になるまで旋回
+            IMU.launch6Axis()
+            if Cource_Angle < 0:
+                DRV_Mortor.turnLeft_St
+                while True:
+                    if IMU.EA_YAW*TURN_Coefficient < Cource_Angle:
+                        DRV_GPS_Ser.trancemitData('Turned(deg):'+str(IMU.EA_YAW)+'from Gyro-Sensor')
+                        break
+            else:
+                DRV_Mortor.turnRight_St
+                while True:
+                    if IMU.EA_YAW*TURN_Coefficient > Cource_Angle:
+                        DRV_GPS_Ser.trancemitData('Turned(deg):'+str(IMU.EA_YAW)+'from Gyro-Sensor')
+                        break
+            DRV_Mortor.stopMotor()
+            IMU.killThread()
+            IMU.resetAll()
+
+            #座標を更新
+            LatLng0 = LatLng1
+
+        elif CHANGE_MODE == True:
+            while True:
+                DRV_GPS_Ser.trancemitData('Taking a Picture...')
+                DRV_Camera.getImage()
+                DRV_GPS_Ser.trancemitData('Detecting...')
+                var = DRV_Camera.detectTarget()
+                if var == False:
+                    DRV_Mortor.turnRight(0.3)
+                    continue
+                else:
+                    DRV_GPS_Ser.trancemitData('Target Acquired.')
+                    if DRV_Camera.judge():
+                        DRV_GPS_Ser.trancemitData('Target is Front.')
+                        DRV_Mortor.moveForward(1)
+                        Distance2 = DRV_GPS_Ser.readGPSData()
+                        break
+                    else:
+                        if var < 512:
+                            DRV_Mortor.turnLeft(0.2)
+                            continue
+                        else:
+                            DRV_Mortor.turnRight(0.2)
+                            continue
+                
+def Driller():
+    DRV_Drill = Drill(MD1,MD2,MD3,MD4,ED1,ED2,Gear_Radius,MaxLength)
+    DRV_Drill.downDrill()
+    DRV_Drill.spinDrill()
+    DRV_Drill.downDrill(10)
+    time.sleep(GetTime)
+    DRV_Drill.stopDrill()
+    DRV_Drill.upDrill()
+
+def main():
+    pass
+
+if __name__ == "__main__":
+    RunBack(GOAL_LAT,GOAL_LNG)
+    Driller()            
+
+            
+        
+
+    
+    
+                
+
+    
+
+    
+
+
+    
+
+

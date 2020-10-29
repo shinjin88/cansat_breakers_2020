@@ -1,0 +1,14 @@
+from DRV_Camera import Camera
+import time
+
+myCamera = Camera(Mx=1024,My=768)
+start = time.time()
+print('started.')
+myCamera.getImage()
+print('took a picture.')
+print(myCamera.filename)
+var = myCamera.detectTarget()
+if var != False:
+	print('EXEC_TIME:',time.time()-start)
+	print('DET',var)
+	print(myCamera.judge())

@@ -1,0 +1,15 @@
+#import FaBo9Axis_MPU9250
+import LibIMU
+import numpy
+import time
+
+#mpu = FaBo9Axis_MPU9250.MPU9250()
+mpu = LibIMU.LibIMU(sample_time=0.1)
+mpu.launch6Axis('yaw_abs')
+while True:
+    #print('ROLL:',mpu.EA_ROLL)
+    #print('PITCH:',mpu.EA_PITCH)
+    print('YAW:',mpu.MGN_YAW)
+    time.sleep(0.1)
+
+    
